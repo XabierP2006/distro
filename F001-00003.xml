@@ -1,0 +1,37 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<Factura>
+ <Cabecera>
+  <Numero>F001-00003</Numero>
+  <Fecha>2026-11-04</Fecha>
+ </Cabecera>
+ <Cliente>
+  <Nombre>Fabiana Morales</Nombre>
+  <Cedula/RUC>1801234567</Cedula/RUC>
+ </Cliente>
+ <Detalle>
+  <Producto>
+   <Nombre>Mouse ReDragon</Nombre>
+   <Cantidad>2</Cantidad>
+   <Preciounitario>25.00</Preciounitario>
+   <Subtotal>50.00</Subtotal>
+  </Producto>
+  <Producto>
+   <Nombre>Mouse Raizer B2</Nombre>
+   <Cantidad>2</Cantidad>
+   <Preciounitario>35.00</Preciounitario>
+   <Subtotal>70.00</Subtotal>
+  </Producto>
+  <Producto>
+   <Nombre>Teclado Relogic Z3</Nombre>
+   <Cantidad>1</Cantidad>
+   <Preciounitario>50.00</Preciounitario>
+   <Subtotal>50.00</Subtotal>
+  </Producto>
+ </Detalle>
+ <Totales>
+  <Subtotal>170.00</Subtotal>
+  <IVA>25.50</IVA>
+  <Total>195.50</Total>
+ </Totales>
+ <Estado>Generada</Estado>
+</Factura>
