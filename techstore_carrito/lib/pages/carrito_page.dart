@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:techstore_carrito/models/item_carrito.dart';
 import 'package:techstore_carrito/models/producto.dart';
 import 'package:techstore_carrito/service/api_service.dart'; 
@@ -88,6 +88,15 @@ class _CarritoPageState extends State<CarritoPage>{
     });
   }
 
+  void cambiarCantidad(ItemCarrito item, int cantidad) {
+    if (cantidad == item.cantidad) return;
+    setState(() {
+      item.cantidad = cantidad;
+      resultadoXML = '';
+      mensajeError = '';
+    });
+  }
+
   void limpiarCarrito(){
     setState(() {
       carrito.clear();
@@ -105,6 +114,38 @@ class _CarritoPageState extends State<CarritoPage>{
   }
   double get total{
     return subtotal + iva;
+  }
+
+  int cantidadEnCarrito(Producto producto) {
+    final index = carrito.indexWhere((item) => item.producto.id == producto.id);
+    return index < 0 ? 0 : carrito[index].cantidad;
+  }
+
+  Future<void> actualizarStock() async {
+    try {
+      final catalogo = await apiService.obtenerProductos();
+      if (!mounted) return;
+      final porId = {for (final producto in catalogo) producto.id: producto};
+      setState(() {
+        productos = catalogo;
+        carrito = [
+          for (final item in carrito)
+            if ((porId[item.producto.id]?.stock ?? 0) > 0)
+              ItemCarrito(
+                producto: porId[item.producto.id]!,
+                cantidad: item.cantidad.clamp(1, porId[item.producto.id]!.stock).toInt(),
+              ),
+        ];
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        mensajeError = [
+          if (mensajeError.isNotEmpty) mensajeError,
+          "No se pudo actualizar el stock.",
+        ].join(" ");
+      });
+    }
   }
 
   Future<void> generarFactura () async{
@@ -126,18 +167,19 @@ class _CarritoPageState extends State<CarritoPage>{
       if(!mounted) return;
       setState(() {
         resultadoXML = respuesta;
+        carrito.clear();
       });
+      await actualizarStock();
     }catch(e){
        if(!mounted) return;
-       setState(() {
-        // esto en producción no vale
-         mensajeError = e.toString();
-       });
-    }finally{
-       if(!mounted) return;
-       setState(() {
-         generandoFactura = false;
-       });
+       setState(() => mensajeError = e.toString());
+       if (e is ApiException && e.statusCode == 409) {
+         await actualizarStock();
+       }
+    } finally {
+      if (mounted) {
+        setState(() => generandoFactura = false);
+      }
     }
 
   }
@@ -253,7 +295,7 @@ Widget _panelProductos() {
                         icon: const Icon(
                           Icons.add_shopping_cart,
                         ),
-                        onPressed: producto.stock > 0
+                        onPressed: !generandoFactura && cantidadEnCarrito(producto) < producto.stock
                             ? () => agregarAlCarrito(producto)
                             : null,
                       ),
@@ -267,7 +309,6 @@ Widget _panelProductos() {
     );
   }
 
-  // 14. PANEL DEL CARRITO
   Widget _panelCarrito() {
     return Container(
       padding: const EdgeInsets.all(16),
@@ -302,27 +343,37 @@ Widget _panelProductos() {
                       final item = carrito[index];
 
                       return Card(
+                        key: ValueKey(item.producto.id),
                         child: ListTile(
                           title: Text(item.producto.nombre),
 
                           subtitle: Text(
-                            "Cantidad: ${item.cantidad}"
-                            " | Precio: \$${item.producto.precio.toStringAsFixed(2)}",
+                            "Subtotal: \$${item.subtotal.toStringAsFixed(2)}",
                           ),
 
                           trailing: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Text(
-                                "\$${item.subtotal.toStringAsFixed(2)}",
-                              ),
-
                               IconButton(
-                                icon: const Icon(
-                                  Icons.remove_circle_outline,
-                                ),
-                                onPressed: () =>
-                                    quitarDelCarrito(item),
+                                tooltip: 'Disminuir cantidad',
+                                icon: const Icon(Icons.remove_circle_outline),
+                                onPressed: generandoFactura
+                                    ? null
+                                    : () => quitarDelCarrito(item),
+                              ),
+                              _CampoCantidad(
+                                cantidad: item.cantidad,
+                                stock: item.producto.stock,
+                                habilitado: !generandoFactura,
+                                onChanged: (cantidad) => cambiarCantidad(item, cantidad),
+                              ),
+                              IconButton(
+                                tooltip: 'Aumentar cantidad',
+                                icon: const Icon(Icons.add_circle_outline),
+                                onPressed: !generandoFactura &&
+                                        item.cantidad < item.producto.stock
+                                    ? () => agregarAlCarrito(item.producto)
+                                    : null,
                               ),
                             ],
                           ),
@@ -387,8 +438,7 @@ Widget _panelProductos() {
       ),
     );
   }
-
-  // 15. PANEL DE FACTURA XML
+ 
   Widget _panelFactura() {
     return Container(
       padding: const EdgeInsets.all(16),
@@ -442,3 +492,90 @@ Widget _panelProductos() {
   }
 }
 
+class _CampoCantidad extends StatefulWidget {
+  const _CampoCantidad({
+    required this.cantidad,
+    required this.stock,
+    required this.habilitado,
+    required this.onChanged,
+  });
+
+  final int cantidad;
+  final int stock;
+  final bool habilitado;
+  final ValueChanged<int> onChanged;
+
+  @override
+  State<_CampoCantidad> createState() => _CampoCantidadState();
+}
+
+class _CampoCantidadState extends State<_CampoCantidad> {
+  late final _texto = TextEditingController(text: widget.cantidad.toString());
+  final _foco = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _foco.addListener(() {
+      if (!_foco.hasFocus) _sincronizar();
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _CampoCantidad oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.cantidad != oldWidget.cantidad || !widget.habilitado) {
+      _sincronizar();
+    }
+  }
+
+  void _sincronizar() {
+    if (int.tryParse(_texto.text) != widget.cantidad) {
+      _texto.text = widget.cantidad.toString();
+    }
+  }
+
+  @override
+  void dispose() {
+    _foco.dispose();
+    _texto.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 56,
+      child: TextField(
+        controller: _texto,
+        focusNode: _foco,
+        enabled: widget.habilitado,
+        selectAllOnFocus: true,
+        textAlign: TextAlign.center,
+        keyboardType: TextInputType.number,
+        textInputAction: TextInputAction.done,
+        decoration: const InputDecoration(
+          labelText: 'Cantidad',
+          isDense: true,
+          border: OutlineInputBorder(),
+          contentPadding: EdgeInsets.symmetric(horizontal: 4, vertical: 9),
+        ),
+        inputFormatters: [
+          FilteringTextInputFormatter.digitsOnly,
+          TextInputFormatter.withFunction((anterior, nuevo) {
+            if (nuevo.text.isEmpty) return nuevo;
+            final cantidad = int.tryParse(nuevo.text);
+            return cantidad != null && cantidad >= 1 && cantidad <= widget.stock
+                ? nuevo
+                : anterior;
+          }),
+        ],
+        onTapOutside: (_) => _foco.unfocus(),
+        onChanged: (texto) {
+          final cantidad = int.tryParse(texto);
+          if (cantidad != null) widget.onChanged(cantidad);
+        },
+      ),
+    );
+  }
+}

@@ -1,203 +1,228 @@
-#api
-from flask import Flask, Response, request, jsonify
-from pathlib import Path
+from contextlib import closing
+from decimal import Decimal, ROUND_HALF_UP
+from hashlib import sha256
+import json
+import os
+from urllib.parse import urljoin
+from uuid import UUID, uuid4
 import xml.etree.ElementTree as ET
+
+from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
+import pyodbc
 
 app = Flask(__name__)
 CORS(app)
 
-iva_general=0.15
+IVA = Decimal("0.15")
+CENTAVO = Decimal("0.01")
 
-def generar_factura_xml(datos):
-    subtotal_real = 0.0
 
+def conectar():
+    cadena = os.environ.get(
+        "TECHSTORE_DB_CONNECTION",
+        "DRIVER={ODBC Driver 18 for SQL Server};SERVER=localhost;"
+        "DATABASE=TechStore360;Trusted_Connection=yes;TrustServerCertificate=yes;",
+    )
+    return pyodbc.connect(cadena, timeout=5)
+
+
+def url_imagen(ruta):
+    return urljoin(request.url_root, ruta) if ruta else ""
+
+
+def generar_factura_xml(numero, fecha, nombre, cedula, detalles, subtotal, iva):
     factura = ET.Element("Factura")
     cabecera = ET.SubElement(factura, "Cabecera")
+    ET.SubElement(cabecera, "Numero").text = f"F001-{numero:06d}"
+    ET.SubElement(cabecera, "Fecha").text = fecha
 
-    ET.SubElement(cabecera,"Numero").text = datos["factura"]["numero"]
-
-    ET.SubElement(cabecera,"Fecha").text = datos["factura"]["fecha"]
-
-    cliente = ET.SubElement(factura,"Cliente")
-
-    ET.SubElement(cliente, "Nombre").text = datos["cliente"]["nombre"]
-    ET.SubElement(cliente, "CedulaRUC").text = datos["cliente"]["cedula_ruc"]
+    cliente = ET.SubElement(factura, "Cliente")
+    ET.SubElement(cliente, "Nombre").text = nombre
+    ET.SubElement(cliente, "CedulaRUC").text = cedula
 
     detalle = ET.SubElement(factura, "Detalle")
-    productos = datos["detalles"]
-    for producto in productos:
-        nombre = producto["nombre"]
-        cantidad = producto["cantidad"]
-        precio = producto["precio_unitario"]
-        subtotal_producto = cantidad*precio
-        subtotal_real +=  subtotal_producto
-
+    for _, nombre_producto, cantidad, precio, imagen in detalles:
         producto = ET.SubElement(detalle, "Producto")
-        ET.SubElement(producto, "Nombre").text = nombre
-        ET.SubElement(producto,"Cantidad").text = str(cantidad)
-        ET.SubElement(producto, "Preciounitario").text = f"{precio:.2f}"
-        ET.SubElement(producto, "Subtotal").text = f"{subtotal_producto:.2f}"
+        ET.SubElement(producto, "Nombre").text = nombre_producto
+        ET.SubElement(producto, "Cantidad").text = str(cantidad)
+        ET.SubElement(producto, "PrecioUnitario").text = f"{precio:.2f}"
+        ET.SubElement(producto, "Subtotal").text = f"{cantidad * precio:.2f}"
+        if imagen:
+            ET.SubElement(producto, "ImagenUrl").text = url_imagen(imagen)
 
-    iva_total = (subtotal_real*iva_general)
-    total = subtotal_real + iva_total
     totales = ET.SubElement(factura, "Totales")
-    ET.SubElement(totales, "Subtotal").text = f"{subtotal_real:.2f}"
-    ET.SubElement(totales, "IVA").text = f"{iva_total:.2f}"
-    ET.SubElement(totales, "Total").text = f"{total:.2f}"
-
+    ET.SubElement(totales, "Subtotal").text = f"{subtotal:.2f}"
+    ET.SubElement(totales, "IVA").text = f"{iva:.2f}"
+    ET.SubElement(totales, "Total").text = f"{subtotal + iva:.2f}"
     ET.SubElement(factura, "Estado").text = "Generada"
- 
-    ET.indent(factura, space=" ", level=0)
- 
-    xml = ET.tostring(factura, encoding="UTF-8", xml_declaration=True)
-    Path(f'{datos["factura"]["numero"]}.xml').write_bytes(xml)
-    return xml
+    return ET.tostring(factura, encoding="unicode")
 
-def validar_datos(datos):
-    errores = []
-    if datos is None or len(datos) == 0:
-        errores.append(
-            {
-                "campo":"body",
-                "error":"Json esta vacío o no es válido"
-            }
-        )
-        return errores
-    factura = datos.get("factura")
-    if not isinstance(factura, dict):
-        errores.append({
-            "campo": "factura",
-            "error": "La factura es requerida"
-        })
-    else:
-        if not factura.get("numero"):
-            errores.append(
-                {
-                    "campo":"numero",
-                    "error": "El numero de factura es requerido"
-                }
-            )
 
-        if not factura.get("fecha"):
-            errores.append(
-                {
-                    "campo":"fecha",
-                    "error": "La fecha de la factura es requerida"
-                }
-            )
+def validar_compra(datos):
+    if not isinstance(datos, dict):
+        raise ValueError("Envía un objeto JSON con cliente y detalles.")
 
     cliente = datos.get("cliente")
-
     if not isinstance(cliente, dict):
-        errores.append(
-            {
-                "campo": "cliente",
-                "error": "Ël cliente es requerido y debe ser un objeto"
-            }
+        raise ValueError("Los datos del cliente son obligatorios.")
+
+    nombre = cliente.get("nombre")
+    cedula = cliente.get("cedula_ruc")
+    if not isinstance(nombre, str) or not 1 <= len(nombre.strip()) <= 150:
+        raise ValueError("El nombre del cliente es obligatorio.")
+    if not isinstance(cedula, str) or not 1 <= len(cedula.strip()) <= 30:
+        raise ValueError("La cédula o RUC del cliente es obligatoria.")
+
+    detalles = datos.get("detalles")
+    if not isinstance(detalles, list) or not detalles:
+        raise ValueError("Agrega al menos un producto.")
+
+    cantidades = {}
+    for item in detalles:
+        if not isinstance(item, dict):
+            raise ValueError("Cada detalle debe incluir producto_id y cantidad.")
+        producto_id = item.get("producto_id")
+        cantidad = item.get("cantidad")
+        if type(producto_id) is not int or not 1 <= producto_id <= 2147483647:
+            raise ValueError("El ID de producto debe ser un entero positivo.")
+        if type(cantidad) is not int or not 1 <= cantidad <= 2147483647:
+            raise ValueError("La cantidad debe ser un entero positivo.")
+        if producto_id in cantidades:
+            raise ValueError("Envía una sola cantidad por producto.")
+        cantidades[producto_id] = cantidad
+
+    return nombre.strip(), cedula.strip(), sorted(cantidades.items())
+
+
+class ConflictoCompra(Exception):
+    pass
+
+
+def guardar_factura(solicitud_id, nombre, cedula, cantidades):
+    huella = sha256(json.dumps([nombre, cedula, cantidades]).encode()).hexdigest()
+    with closing(conectar()) as conexion:
+        cursor = conexion.cursor()
+        cursor.execute("SET XACT_ABORT ON;")
+        try:
+            numero, fecha = cursor.execute(
+                """
+                INSERT dbo.Facturas (SolicitudId, Huella, ClienteNombre, ClienteCedulaRuc)
+                OUTPUT inserted.Id, CONVERT(varchar(10), inserted.Fecha, 23)
+                VALUES (?, ?, ?, ?)
+                """,
+                solicitud_id, huella, nombre, cedula,
+            ).fetchone()
+        except pyodbc.IntegrityError:
+            conexion.rollback()
+            anterior = cursor.execute(
+                """
+                SELECT Huella, CONVERT(nvarchar(max), Documento)
+                FROM dbo.Facturas WHERE SolicitudId = ?
+                """,
+                solicitud_id,
+            ).fetchone()
+            if anterior is None:
+                raise
+            if anterior[0] != huella:
+                raise ConflictoCompra("El identificador ya se usó para otra compra.")
+            return anterior[1]
+
+        detalles = []
+        subtotal = Decimal("0.00")
+        for producto_id, cantidad in cantidades:
+            # El descuento y la comprobación de stock son una sola operación.
+            producto = cursor.execute(
+                """
+                UPDATE dbo.Productos
+                SET Stock = Stock - ?
+                OUTPUT inserted.Nombre, inserted.Precio, inserted.ImagenUrl
+                WHERE Id = ? AND Activo = 1 AND Stock >= ?
+                """,
+                cantidad, producto_id, cantidad,
+            ).fetchone()
+            if producto is None:
+                conexion.rollback()
+                raise ConflictoCompra(
+                    "Ya no hay suficientes unidades de uno de tus productos. Es posible que alguien más lo haya comprado. Revisa tu carrito e inténtalo de nuevo."
+                )
+            detalles.append((
+                producto_id, producto.Nombre, cantidad, producto.Precio, producto.ImagenUrl,
+            ))
+            subtotal += cantidad * producto.Precio
+
+        cursor.executemany(
+            """
+            INSERT dbo.FacturaDetalle
+                (FacturaId, ProductoId, Nombre, Cantidad, PrecioUnitario)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (numero, producto_id, nombre_producto, cantidad, precio)
+                for producto_id, nombre_producto, cantidad, precio, _ in detalles
+            ],
         )
-    else:
-        if not cliente.get("nombre"):
-            errores.append(
-                {
-                    "campo": "cliente.name",
-                    "error": "El nombre del cliente es requerido"
-                }
-            )
-        if not cliente.get("cedula_ruc"):
-            errores.append(
-                {
-                    "campo": "cliente.cedula_ruc",
-                    "error": "La cedula u RUC del cliente es requerido"
-                }
-            )
-
-    productos = datos.get("detalles")
-    if not isinstance(productos,list) or len(productos) == 0:
-        errores.append(
-            {
-                "campo": "productos",
-                "error": "La lista de productos es requerida y tiene que tener almenos un producto"
-            }
-        )
-    else:
-        for i, producto in enumerate(productos):
-            if not producto.get("nombre"):
-                errores.append(
-                    {
-                        "campo": f"producto[{i}].nombre",
-                        "error": "El nombre del producto es requerido"
-                    }
-                )
-
-            try:
-                cantidad = float(producto.get("cantidad", 0))
-                if cantidad <= 0:
-                    errores.append(
-                        {
-                            "campo":f"producto[{i}].cantidad",
-                            "error":"La cantidad del producto debe ser mayor a 0"
-                        }
-                    )
-            except ValueError:
-                errores.append(
-                    {
-                        "campo":f"producto[{i}].cantidad",
-                        "error":"La cantidad debe ser numérica"
-                    }
-                )
-            try:
-                precio_unitario = float(producto.get("precio_unitario", 0))
-                if precio_unitario <= 0:
-                    errores.append(
-                        {
-                            "campo":f"producto[{i}].precio_unitario",
-                            "error":"El precio_unitario del producto debe ser mayor a 0"
-                        }
-                    )
-            except ValueError:
-                errores.append(
-                    {
-                        "campo":f"producto[{i}].precio_unitario",
-                        "error":"El precio_unitario debe ser numérica"
-                    }
-                )
-
-    return errores
+        iva = (subtotal * IVA).quantize(CENTAVO, rounding=ROUND_HALF_UP)
+        xml = generar_factura_xml(numero, fecha, nombre, cedula, detalles, subtotal, iva)
+        documento = cursor.execute(
+            """
+            UPDATE dbo.Facturas
+            SET Subtotal = ?, Iva = ?, Total = ?, Documento = CONVERT(xml, ?, 1)
+            OUTPUT CONVERT(nvarchar(max), inserted.Documento)
+            WHERE Id = ?
+            """,
+            subtotal, iva, subtotal + iva, xml, numero,
+        ).fetchone()[0]
+        conexion.commit()
+        return documento
 
 
-#endpoint
-@app.route("/")
-def inicio(): 
-    return "Bienvenido a TeschStore Facturacion"
-
-@app.route("/api/facturas", methods=["POST"])
-def generar_factura():
-    datos = request.get_json()
-    errores = validar_datos(datos)
-    if errores:
-        return jsonify(
-            {
-                "errores": errores,
-                "estado": "Error",
-                "mensaje": "Datos Inválidos"
-            }
-        ), 400
-    xml = generar_factura_xml(datos)
-    if request.accept_mimetypes.best_match(["application/json", "application/xml"]) == "application/xml":
-        return Response(xml, content_type="application/xml; charset=utf-8")
-    return datos
+@app.get("/")
+def inicio():
+    return "Servicio de Facturación TechStore 360"
 
 
-@app.route('/api/productos', methods=['GET'])
+@app.get("/api/productos")
 def obtener_productos():
-    
-    return jsonify(
-            {"id": 1, "nombre": "Producto A", "precio": 10.0, "stock": 100, "imageURL": "https://example.com/producto_a.jpg"},
-            {"id": 2, "nombre": "Producto B", "precio": 20.0, "stock": 50, "imageURL": "https://example.com/producto_b.jpg"},
-            {"id": 3, "nombre": "Producto C", "precio": 30.0, "stock": 25, "imageURL": "https://example.com/producto_c.jpg"})
+    with closing(conectar()) as conexion:
+        filas = conexion.cursor().execute(
+            """
+            SELECT Id, Nombre, Precio, Stock, ImagenUrl
+            FROM dbo.Productos WHERE Activo = 1 ORDER BY Id
+            """
+        ).fetchall()
+    return jsonify([
+        dict(id=fila.Id, nombre=fila.Nombre, precio=float(fila.Precio),
+             stock=fila.Stock, imagen_url=url_imagen(fila.ImagenUrl))
+        for fila in filas
+    ])
+
+
+@app.post("/api/facturas")
+def generar_factura():
+    try:
+        compra = validar_compra(request.get_json(silent=True))
+        clave = request.headers.get("Idempotency-Key")
+        try:
+            solicitud_id = str(UUID(clave)) if clave else str(uuid4())
+        except ValueError:
+            raise ValueError("Idempotency-Key debe ser un UUID válido.") from None
+        xml = guardar_factura(solicitud_id, *compra)
+    except ValueError as error:
+        return jsonify(mensaje=str(error)), 400
+    except ConflictoCompra as error:
+        return jsonify(mensaje=str(error)), 409
+    factura = ET.fromstring(xml)
+    ET.indent(factura, space="  ")
+    return Response(ET.tostring(factura, encoding="utf-8"),
+                    content_type="application/xml; charset=utf-8")
+
+
+@app.errorhandler(pyodbc.Error)
+def error_base_de_datos(error):
+    app.logger.error("SQL Server: %s", error)
+    return jsonify(mensaje="No se pudo completar la operación en SQL Server."), 503
+
+
 if __name__ == "__main__":
-    app.run(
-        host='0.0.0.0',
-        port=5000,
-        debug=True)
+    app.run(host="0.0.0.0", port=5000)
