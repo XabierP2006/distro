@@ -18,7 +18,7 @@ class Producto{
       nombre: json['nombre'],
       precio: json['precio'].toDouble(),
       stock: json['stock'],
-      imageURL: json['imageURL'],
+      imageURL: (json['imageURL'] ?? json['imagen_url']) as String? ?? '',
     );
   }
 }

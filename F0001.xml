@@ -1,0 +1,31 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<Factura>
+ <Cabecera>
+  <Numero>F0001</Numero>
+  <Fecha>2026-11-09</Fecha>
+ </Cabecera>
+ <Cliente>
+  <Nombre>Xabi Perez</Nombre>
+  <CedulaRUC>1756402432</CedulaRUC>
+ </Cliente>
+ <Detalle>
+  <Producto>
+   <Nombre>Producto A</Nombre>
+   <Cantidad>1</Cantidad>
+   <Preciounitario>10.00</Preciounitario>
+   <Subtotal>10.00</Subtotal>
+  </Producto>
+  <Producto>
+   <Nombre>Producto B</Nombre>
+   <Cantidad>1</Cantidad>
+   <Preciounitario>20.00</Preciounitario>
+   <Subtotal>20.00</Subtotal>
+  </Producto>
+ </Detalle>
+ <Totales>
+  <Subtotal>30.00</Subtotal>
+  <IVA>4.50</IVA>
+  <Total>34.50</Total>
+ </Totales>
+ <Estado>Generada</Estado>
+</Factura>

@@ -1,8 +1,11 @@
 #api
-from flask import Flask, request, jsonify
+from flask import Flask, Response, request, jsonify
+from pathlib import Path
 import xml.etree.ElementTree as ET
+from flask_cors import CORS
 
 app = Flask(__name__)
+CORS(app)
 
 iva_general=0.15
 
@@ -19,7 +22,7 @@ def generar_factura_xml(datos):
     cliente = ET.SubElement(factura,"Cliente")
 
     ET.SubElement(cliente, "Nombre").text = datos["cliente"]["nombre"]
-    ET.SubElement(cliente, "Cedula/RUC").text = datos["cliente"]["cedula_ruc"]
+    ET.SubElement(cliente, "CedulaRUC").text = datos["cliente"]["cedula_ruc"]
 
     detalle = ET.SubElement(factura, "Detalle")
     productos = datos["detalles"]
@@ -47,8 +50,9 @@ def generar_factura_xml(datos):
  
     ET.indent(factura, space=" ", level=0)
  
-    arbol = ET.ElementTree(factura)
-    arbol.write(f'{datos["factura"]["numero"]}.xml', encoding="UTF-8", xml_declaration=True)
+    xml = ET.tostring(factura, encoding="UTF-8", xml_declaration=True)
+    Path(f'{datos["factura"]["numero"]}.xml').write_bytes(xml)
+    return xml
 
 def validar_datos(datos):
     errores = []
@@ -179,7 +183,9 @@ def generar_factura():
                 "mensaje": "Datos Inválidos"
             }
         ), 400
-    generar_factura_xml(datos)
+    xml = generar_factura_xml(datos)
+    if request.accept_mimetypes.best_match(["application/json", "application/xml"]) == "application/xml":
+        return Response(xml, content_type="application/xml; charset=utf-8")
     return datos
 
 
@@ -187,9 +193,9 @@ def generar_factura():
 def obtener_productos():
     
     return jsonify(
-            {"id": 1, "nombre": "Producto A", "precio": 10.0, "stock": 100, "imagen_url": "https://example.com/producto_a.jpg"},
-            {"id": 2, "nombre": "Producto B", "precio": 20.0, "stock": 50, "imagen_url": "https://example.com/producto_b.jpg"},
-            {"id": 3, "nombre": "Producto C", "precio": 30.0, "stock": 25, "imagen_url": "https://example.com/producto_c.jpg"})
+            {"id": 1, "nombre": "Producto A", "precio": 10.0, "stock": 100, "imageURL": "https://example.com/producto_a.jpg"},
+            {"id": 2, "nombre": "Producto B", "precio": 20.0, "stock": 50, "imageURL": "https://example.com/producto_b.jpg"},
+            {"id": 3, "nombre": "Producto C", "precio": 30.0, "stock": 25, "imageURL": "https://example.com/producto_c.jpg"})
 if __name__ == "__main__":
     app.run(
         host='0.0.0.0',

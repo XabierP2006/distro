@@ -5,9 +5,12 @@ import 'package:techstore_carrito/models/item_carrito.dart';
 import 'package:techstore_carrito/models/producto.dart';
 
 class ApiService {
-  static const String baseUrl ='http://10.79.31.185:5000';
+  static const String baseUrl = String.fromEnvironment(
+    'API_BASE_URL',
+    defaultValue: 'http://127.0.0.1:5000',
+  );
   Future<List<Producto>> obtenerProductos() async {
-    final url =  Uri.parse('$baseUrl/productos');
+    final url =  Uri.parse('$baseUrl/api/productos');
     final response = await http.get(url);
     if (response.statusCode == 200) {
       final List<dynamic> data = json.decode(response.body);
@@ -18,7 +21,7 @@ class ApiService {
     }
   }
   Future<String> generarFactura(List<ItemCarrito> items) async {
-    final url = Uri.parse('$baseUrl/factura');
+    final url = Uri.parse('$baseUrl/api/facturas');
     final datosCompra = {
       "factura": {
         "numero": "F0001",

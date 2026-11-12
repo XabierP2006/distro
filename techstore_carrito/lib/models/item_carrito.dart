@@ -13,7 +13,7 @@ class ItemCarrito {
   Map<String, dynamic> toJson() {
     return {  
       'nombre': producto.nombre,
-      'precio': producto.precio,
+      'precio_unitario': producto.precio,
       'cantidad': cantidad,
     };
   }
